@@ -33,6 +33,22 @@ PATCHES = {
     ),
 
     # ---- Gate removal candidates (each tested in isolation) ----
+    "gate_nz_skip": (
+        0x72015FC, "0c000014",
+        "cbnz w9,[x26,#2720] -> b 0x720162c (always skip gate dialog block)",
+    ),
+    "gate_nop_run": (
+        0x7201660, "1f2003d5",
+        "bl 0x5c9fd30 (gate dialog runner, SOLE caller) -> nop",
+    ),
+    "gate_skip_dialog": (
+        0x5C9FD94, "07000014",
+        "b 0x5c9fdb0 - keep singleton init, skip dialog alloc+show",
+    ),
+    "gate_no_show": (
+        0x5C9FDB8, "c0035fd6",
+        "b 0x782a844 (show gate dialog) -> ret; keeps alloc+singleton",
+    ),
     "gate_getter": (
         0x79B8734, "40008052c0035fd6",
         "Activation-mode getter -> mov w0,#2 ; ret",
