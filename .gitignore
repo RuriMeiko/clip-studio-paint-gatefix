@@ -1,0 +1,9 @@
+# Allowlist: ignore everything, then un-ignore what we track
+/*
+!/.gitignore
+!/README.md
+!/PATCHES.md
+!/tools/
+!/scripts/
+!/frida/
+!/docs/
