@@ -49,6 +49,10 @@ PATCHES = {
         0x5C9FDB8, "c0035fd6",
         "b 0x782a844 (show gate dialog) -> ret; keeps alloc+singleton",
     ),
+    "gate_cmp": (
+        0x4A6AE64, "1ffc0171",
+        "cmp w0,#3 -> cmp w0,#0x7f (never matches -> non-doodle branch)",
+    ),
     "gate_getter": (
         0x79B8734, "40008052c0035fd6",
         "Activation-mode getter -> mov w0,#2 ; ret",
