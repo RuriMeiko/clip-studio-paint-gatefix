@@ -1,95 +1,73 @@
 # Nhật ký thử nghiệm patch CSP 5.1.4
 
-Mỗi dòng = build + cài + chụp màn hình thật trên redroid container.
+Mỗi dòng = build + cài + test thật. Bảng dưới là **toàn bộ** quá trình bisect
+để tìm ra điểm patch duy nhất.
 
-## KẾT QUẢ CUỐI: Morphe baseline — DÙNG ĐƯỢC
+## KẾT QUẢ CUỐI: 1 điểm patch — ĐÚNG
 
-| Hạng mục | Trạng thái | Bằng chứng |
-|---------|-----------|------------|
-| Cài đặt | OK | CN=Morphe, cài đè không mất dữ liệu |
-| Khởi động | OK | vào Clip Studio Start |
-| Gate | **1 lần duy nhất** | bấm X là qua, lần sau không hiện |
-| Tạo canvas | OK | New canvas -> Screen size 720x1600 |
-| Vẽ | OK | nét vẽ hiện trên canvas |
-| **Lưu** | **OK** | project "Illustration 20261027 4" + thumbnail thật |
-| Quảng cáo | không có | |
-| Login | không cần | |
+| Hạng mục | Trạng thái |
+|---|---|
+| Gate khởi động | **biến mất** |
+| Doodle popup | **không có** |
+| Banner "saving disabled" | **không có** |
+| Lưu project | **OK, còn sau force-stop** |
+| Export | OK |
+| Crash | không |
+| Login | không cần |
 
-Ảnh bằng chứng: `shot_base.png` (gate), `canvas2.png` (canvas), `proj2.png` (đã lưu).
+Điểm patch: `0xb591d94` — `38 09 00 94` (`bl 0xb594274`) → `05 00 00 94` (`bl 0xb591da8`).
+Chi tiết trong [GATEFIX.md](GATEFIX.md).
 
-## Các patch đã thử
+## Bisect: bảng kết quả đầy đủ
 
-| # | Bộ patch | Gate | App chạy | Kết luận |
-|---|----------|------|----------|----------|
-| 1 | Morphe baseline (7 patch) | còn | OK, lưu được | **DÙNG BẢN NÀY** |
-| 2 | + gate_getter @0x79b8734 | — | CRASH | xung đột với morphe_mode_fn |
-| 3 | + gate_cbz_to_b @0xb591d98 | còn | OK | không phải chốt |
-| 4 | + gate_nz_skip @0x72015fc | còn | OK | không phải chốt |
-| 5 | + gate_nop_run @0x7201660 | mất | treo splash | singleton không tạo |
-| 6 | + gate_skip_dialog @0x5c9fd94 | — | CRASH | caller nhận garbage |
-| 7 | + gate_no_show @0x5c9fdb8 | mất | treo splash | dialog là blocking modal |
-| 8 | + gate_cmp @0x4a6ae64 | còn | OK | không phải chốt |
+Base cho mọi lần: lib md5 `b2edc74c69af6db2c83c224a7fdd3b87` (bản Morphe).
+Mỗi lần chỉ khác base đúng các điểm liệt kê.
 
-## Phát hiện then chốt
+| Lần | Điểm patch | Gate | Doodle | Lưu | Kết luận |
+|---|---|---|---|---|---|
+| base | — (Morphe thuần) | còn | không | được | baseline |
+| 13 điểm | tất cả 13 | **mất** | **CÓ** | **không** | phá license state |
+| t1 | `0x79b4734` | còn | không | được | loại |
+| t2 | `0x72015a4`+`0x72015e0`+`0x7201600` | còn | không | được | loại |
+| t3 | `0x5f3ef6c`+`0x5f40700` | còn | không | được | loại |
+| **t4** | **`0xb591d94`** | **mất** | **không** | **được** | **CHỐT** |
 
-**Gate là dialog modal blocking một lần.** Hàm `0x5c9fd30` chạy event loop và chỉ trả về
-khi user chọn. Mọi cách chặn hiển thị đều treo splash hoặc crash.
+## Các patch đã thử và bị loại
 
-Nhưng gate **chỉ chặn lần đầu**: bấm X một lần là app nhớ trạng thái và vào thẳng
-ở các lần mở sau. Không cần patch — chỉ cần thao tác một lần khi cài.
+| Điểm | Sửa thành | Kết quả |
+|---|---|---|
+| `0x7201600` | `b 0x720162c` | **SIGSEGV** `SEGV_ACCERR` tại `0x720158c` — nhảy qua cặp `adrp+add` mà đích cần |
+| `0x794dc08` | `mov w0,#1; ret` | **SIGSEGV** — hàm trả con trỏ object trong `x0`, không phải int |
+| `0x794dc7c` | `mov w0,#1; ret` | **SIGSEGV** — cùng lý do |
+| `0x4a50c20` | `mov w0,#1` | Treo splash (máy ảo), màn hình đen (tablet) |
+| `0x79b4734` | `mov w0,#2; ret` | Gate không đổi (t1) |
+| `0x79b8734` | `mov w0,#2; ret` | Gate không đổi |
+| `0x7201588`/`0x720158c` | trỏ sang `0xbca5b08` | Gate **và** doodle |
+| `0x7201660` | `nop` | **Treo splash** — lệnh đó cấp phát object, `x0` thành rác |
+| `0x72015fc` | bỏ nhánh | Gate vẫn còn |
+| `0xb591d98` | `cbz` → `b` | Gate vẫn còn (phải sửa ở `0xb591d94`) |
 
-## Ánh xạ địa chỉ (QUAN TRỌNG)
+## Vì sao "chỉ xoá hộp thoại" thất bại
 
-`libClipStudioPaint.so` arm64:
+`0x5c9fd30` không phải hàm render dialog. Nó là **constructor**:
+`mov w0,#0x58` rồi `bl 0xb7c5450` (allocator), sau đó `mov w0,#0x13d0`
+cho object 5072 byte. Nó trả con trỏ trong `x0`.
 
-- `.text`: **VA = file_offset + 0x4000**
-- `.rodata`: VA = file_offset
+Bỏ lời gọi ⇒ con trỏ không được tạo ⇒ code phía sau chờ một callback không bao giờ
+được đăng ký ⇒ spinner quay mãi, process còn sống, không có crash log.
 
-Nhầm hai hệ này từng gây patch sai chỗ (getter thật ở VA `0x79b8734`).
+`0xb7e35f0` cũng không phải hàm — nó là block PLT veneer
+(`adrp; ldr; add; br` ở stride 16 byte). Follow một `bl` vào đó không resolve ra gì.
 
-## Công cụ
+## Vì sao bản 13 điểm gây doodle
 
-```bash
-python3 tools/csp_patch.py --list                       # danh sách patch
-python3 tools/csp_patch.py <in.so> <out.so> [tên...]    # áp patch (mặc định = Morphe)
-python3 tools/csp_patch.py --verify <lib.so>            # kiểm tra
-./tools/build_apk.sh <patched.so> <out.apk>             # build + ký
-./tools/deploy.sh <out.apk>                             # cài lên máy ảo
-```
+13 điểm chia thành 5 nhóm chức năng. Nhóm gây hại:
 
-## Khoá ký
+- `0x79b4734` — ép `returnAllProductPlan` trả `2`, giá trị không khớp bảng plan thật
+- `0x7201588`/`0x720158c` — đổi nhánh licensed sang vùng state khác (`0xbca5b08`)
 
-`morphe_p12.p12` (alias `morphe`, pass `morphe`) — **bắt buộc** để cài đè không mất dữ liệu.
-Fingerprint: `331f1042c40cad6844b666607ca817c6f095d1126afd2c906de045e3f2f86814`
+Khi license state machine không xác định được plan hợp lệ, app rơi vào fallback
+**doodle mode** — chính là banner "saving disabled".
 
-## Thiết bị
-
-- redroid container: `127.0.0.1:15555` (Android 16, arm64, 720x1600)
-- tablet thật: `6e87bb98` (2136x3200) — cài sau khi máy ảo pass
-
-## Toạ độ thao tác (container 720x1600)
-
-- Gate: nút X `(699, 71)`
-- Draw FAB `(360, 1396)`
-- Screen size `(604, 412)`
-- Projects tab `(216, 1420)`
-- Thoát canvas `(55, 173)`
-## ĐÍNH CHÍNH QUAN TRỌNG (2026-10-28)
-
-Kết luận trước đó SAI. Gate KHÔNG nhớ trạng thái:
-
-- Force-stop -> mở lại: gate hiện lại
-- Về home -> mở lại: gate hiện lại (ảnh `p_b.png`, md5 giống `p_a.png`)
-
-Cú bấm X chỉ có giá trị trong phiên hiện tại. Mỗi lần mở app đều phải bấm lại.
-
-### Thử thêm: gate_nowait @0x7a81184
-
-Patch `b 0x7a811d0` để bỏ vòng chờ kết quả -> **app thoát về launcher**.
-Nguyên nhân: `0x7a811d0: bl 0x7a7e970` có side effect xoá cờ global mà code sau cần.
-
-### Kết luận sau 10 lần thử
-
-Mọi patch vào đường gate đều phá app. Gate gắn chặt vào luồng cấp phép
-(RTTI object, global flags, callback chain), không phải UI tách rời.
-
+Điểm `0xb591d94` thì khác: nó bỏ qua **nhánh phụ thuộc** license, không sửa giá trị
+plan. Mọi biến mà code sau cần vẫn được khởi tạo bởi các lệnh trước đó.

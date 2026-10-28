@@ -1,134 +1,174 @@
-# CSP gate fix — RECOVERED, REBUILT & VERIFIED (2026-10-28)
+# Clip Studio Paint 5.1.4 — gate removal (single-site patch)
 
-## Ket qua cuoi cung
+## TL;DR
 
-| Hang muc | May ao (redroid tablet) | Tablet that (Xiaomi Pad) |
-|---------|------------------------|--------------------------|
-| Gate khoi dong (View plans / Try for free / Log in) | **BIEN MAT** | **BIEN MAT** |
-| Doodle mode popup ("You are currently in doodle mode") | Khong co | **BIEN MAT** |
-| Banner xanh "Doodle mode (saving disabled)" | Khong co | **BIEN MAT** |
-| Save project | OK | **OK** — net ve moi con sau force-stop |
-| Export | OK | OK |
-| Crash | Khong | Khong |
+**One patch site. Two bytes. No license dialog, no doodle mode, saving works.**
 
-## Nguon goc
+| | |
+|---|---|
+| File | `lib/arm64-v8a/libClipStudioPaint.so` |
+| VA (virtual address) | `0xb591d94` |
+| File offset | `0xb58dd94` |
+| Original | `38 09 00 94` — `bl 0xb594274` |
+| Patched | `05 00 00 94` — `bl 0xb591da8` |
+| Effect | Skips the `if (license_check()) { ... }` block, resumes right after it |
 
-Lib gate-fix goc van con tren dia:
-`csp/arm64/lib/arm64-v8a/libClipStudioPaint.so`
-(195,412,600 B, md5 `7eec82920423974677b4646978a2f24f`, 27/10 17:34)
+Nothing else is modified. Byte-diff against the Morphe-patched base: **exactly 2 bytes differ**, both inside this one instruction.
 
-Diff voi lib sach `/tmp/base0/...` (md5 `1cbc8ea66309c6d60964d42d807c1c54`) cho ra **14 vung**, trong do 13 vung co nghia:
+## Why this site and not the others
 
-| VA | Goc | Moi | Y nghia |
-|----|-----|-----|---------|
-| `0x4a85fc0` | `13` | `1f` | clear doodle flag store 1 |
-| `0x4a86030` | `13` | `1f` | clear doodle flag store 2 |
-| `0x4bad268` | `09` | `1f` | clear doodle flag store 3 |
-| `0x4c905c8` | `68` | `7f` | cmp #3 -> #0x7f (doodle check 4) |
-| `0x4c90734` | `35` | `3f` | cbnz variant (doodle check 5) |
-| `0x5f3ef6c` | `68008052` | `48008052` | `mov w8,#3` -> `mov w8,#0` — khong set mode 3 |
-| `0x5f40700` | `68008052` | `48008052` | nhu tren, site 2 |
-| `0x72015a4` | `28b17039` | `e8031f2a` | `ldrb w8,[x9,#3116]` -> `mov w8,wzr` — cached flag luon 0 |
-| `0x72015e0` | `68` | `48` | `mov w8,#3` -> `mov w8,#0` |
-| `0x7201600` | `0801c0d2` | `0b000014` | `mov x8,#0x800000000` -> `b 0x720162c` — **BO KHOI DUNG DIALOG** |
-| `0x79b4734` | `ab273129bf01176b` | `40008052c0035fd6` | `mov w0,#2; ret` (returnAllProductPlan) |
-| `0x79b8738` | `1f050071` | `1ffd0171` | `cmp w8,#1` -> `cmp w8,#0x7f` |
-| `0xb591d94` | `38090094` | `05000014` | `bl ...` -> `b +5` |
+The naive approach — patching everything that mentions a plan or license value — removes the gate but *also* breaks the license state machine, which drops the app into **doodle mode (saving disabled)**. That was the failure mode of an earlier 13-site patch set.
 
-**Diem mau chot:** `0x7201600` khong phai `cbnz` — no nhay qua phan dung dialog
-**ngay ben trong nhanh da duoc chon**, giu nguyen `0x720162c` phia sau.
-Do la ly do 12 lan thu truoc treo splash / crash: chung cat ngang blocking modal,
-con patch nay chi bo phan *dung* dialog.
+The 13 sites were bisected one group at a time on a real Xiaomi Pad 7 (2410CRP4CG, Android 16, arm64-v8a, unrooted):
 
-## ELF address mapping (QUAN TRONG)
+| Trial | Sites patched | Gate gone? | Doodle? | Saving? |
+|---|---|---|---|---|
+| — | Morphe only, no gatefix | no | no | yes |
+| — | all 13 sites | **yes** | **yes** | **no** |
+| t1 | `0x79b4734` | no | no | yes |
+| t2 | `0x72015a4` + `0x72015e0` + `0x7201600` | no | no | yes |
+| t3 | `0x5f3ef6c` + `0x5f40700` | no | no | yes |
+| **t4** | **`0xb591d94`** | **yes** | **no** | **yes** |
 
-`libClipStudioPaint.so` la bare ELF, khong co section header dung chuan:
+Only `0xb591d94` matters. The other twelve are either irrelevant to the gate or actively harmful.
 
-- `.text`  -> `VA = file_offset + 0x4000`
-- `.rodata` -> `VA = file_offset`
+## What the patch actually does
 
-Moi offset trong bang tren la **VA**, khong phai file offset.
-Cong cu `tools/gatefix.py` da xu ly san.
-
-## Build
-
-```bash
-unzip csp_full_patched.apk -d /tmp/gfbuild   # base Morphe da co san 7 patch
-cp csp/arm64/lib/arm64-v8a/libClipStudioPaint.so /tmp/gfbuild/lib/arm64-v8a/
-zip -q -r -X -n .so:arsc /tmp/gf_unsigned.apk . -x '.*'
-zipalign -f -p 4 /tmp/gf_unsigned.apk /tmp/gf_aligned.apk
-apksigner sign --ks morphe_p12.p12 --ks-pass pass:morphe \
-  --key-pass pass:morphe --ks-key-alias morphe \
-  --out csp_gatefix_v2.apk /tmp/gf_aligned.apk
+```asm
+0xb591d8c  mov  x0, x19
+0xb591d90  mov  x1, x21
+0xb591d94  bl   0xb594274    ; <- license check, returns bool in w0
+0xb591d98  cbz  w0, ...
+0xb591d9c  cbz  w22, ...
+0xb591da0  mov  x0, x19
+0xb591da4  bl   0xb597fe4
+0xb591da8  ldr  w8, [x19,#0x138]   ; <- patched target: resume here
 ```
 
-Ket qua: `csp_gatefix_v2.apk` (497,005,016 B)
-sha256 `bf8a2ee4cee94c13a9692e6bd8e3bbe1021460e400082015d384321c1955d125`
-Cert `CN=Morphe`, SHA-256 `331f1042c40cad6844b666607ca817c6f095d1126afd2c906de045e3f2f86814`
-— **cung khoa ban dang cai, cai de khong mat du lieu**.
+The patched instruction jumps to `0xb591da8`, the first instruction *after* the license-dependent block. This is deliberately **not** a `nop`: a `nop` would leave `w0` holding a stale value and the following `cbz` would take an undefined branch. Redirecting the call target keeps control flow well-formed — every register the later code depends on is still initialised by the instructions before `0xb591d94`.
 
-Luu y khi zip: bat buoc `-n .so:arsc` de `resources.arsc` khong bi nen,
-neu khong `apksigner` bao `-124 ... must be stored uncompressed and aligned`.
+## Rejected approaches
 
-## Kiem chung
+Documented so nobody repeats them.
 
-### May ao — redroid Android 16 (SDK 36) arm64-v8a, 2136x3200 @ 440 dpi
-Thiet bi gia lap: `ro.product.model=2410CRP4CG`, `ro.build.characteristics=tablet`
-(khop tablet that de tai hien dieu kien).
+| Patch | Result |
+|---|---|
+| `0x7201600` → `b 0x720162c` | **SIGSEGV** `SEGV_ACCERR` at `0x720158c` — jumps over an `adrp+add` pair the branch target needs |
+| `0x794dc08` → `mov w0,#1; ret` | **SIGSEGV** — the function returns an object pointer in `x0`, not an int |
+| `0x794dc7c` → `mov w0,#1; ret` | **SIGSEGV** — same reason |
+| `0x4a50c20` → `mov w0,#1` | Splash hang on emulator, black screen on device |
+| `0x79b4734` → `mov w0,#2; ret` | Gate unaffected (trial t1) |
+| `0x7201588`/`0x720158c` (licensed branch) | Gate *and* doodle |
+| `0x7201660` → `nop` (skip gate dialog call) | **Splash hang** — the call allocates an object; `x0` becomes garbage and later code spins forever |
+| `0x79b8734` → `mov w0,#2; ret` (plan getter) | Gate unaffected |
 
-1. Cai bang session install -> `Success`
-2. Force-stop -> `am start` -> **Clip Studio START hien ra truc tiep, khong gate**
-3. Mo project cu -> **khong co popup doodle, khong co banner saving disabled**
-4. Ve them net -> back -> Projects -> thumbnail cap nhat
-5. Force-stop lan 2 -> mo lai -> **van khong co gate, net ve con nguyen**
+### Why "just remove the dialog" fails
 
-### Tablet that — Xiaomi Pad `2410CRP4CG`, Android 16, 2136x3200 @ 440 dpi
-`ro.build.characteristics=tablet`, khong root.
+`0x5c9fd30` is not a dialog renderer. It is a **constructor**: `mov w0,#0x58` then `bl 0xb7c5450` (allocator), later `mov w0,#0x13d0` for a second 5072-byte object. It returns a pointer in `x0`. Skipping the call means the pointer is never produced, and whatever consumes it waits on a callback that is never registered — the splash spinner rotates forever with the process alive and no crash log.
 
-1. Cai de (upgrade in place, cung cert Morphe) -> `Success`, du lieu project giu nguyen
-2. Force-stop -> `am start` -> **vao thang, khong gate**
-3. Mo project `Illustration 20261027` -> **canvas mo sach, khong popup doodle,
-   khong banner "Doodle mode (saving disabled)"**
-4. Ve 2 net moi -> net hien tren canvas
-5. Force-stop -> mo lai -> **thang vao project, net ve moi con nguyen** (save that)
+Likewise `0xb7e35f0` turned out to be a PLT veneer block (`adrp; ldr; add; br` stubs at 16-byte stride), not a function — following a `bl` into it resolves nothing.
 
-## Nhung huong da thu va THAT BAI (de khong lap lai)
+## Build recipe
 
-| Thu | Ket qua |
-|-----|---------|
-| Patch `0x794dc08` -> `mov w0,#1; ret` | **SEGV** tai `0x4cf130c`. Ham nay tra con tro object trong `x0`, khong phai int. |
-| Patch `0x794dc7c` (`ldr w0,[x20,#28]`) -> `mov w0,#1` | **SEGV** cung cho. Caller dung `x0` lam con tro. |
-| Patch `0x4a50c20` (`bl 0x794dc08`) -> `mov w0,#1` | **Treo splash**. `w4` la chi so capability trong map, khong phai boolean. |
-| Doi chuoi `device=tablet` -> `device=phone` trong file | Khong duoc: 2 chuoi nay nam trong **resource pack nhi phan** cua Celsys (lan voi shader GL), khong phai string table. Ghi de se pha GL. |
-| Tim ADRP+ADD xref toi `device=tablet` | **0 xref**. Chuoi di qua he thong resource rieng cua Celsys, khong tham chieu truc tiep. |
-| Mitm (mitmproxy + Frida) | **Bat kha thi**: Android 16 chuyen CA store sang `/apex/com.android.conscrypt/cacerts/` (read-only, system-signed). `shell` uid 2000 khong ghi duoc `/system`. Shizuku cung chi co quyen shell. |
+Base: the Morphe-patched APK, whose `libClipStudioPaint.so` is md5 `b2edc74c69af6db2c83c224a7fdd3b87`.
 
-## Vi sao ban v2 nay xoa duoc ca popup doodle
+Caution: a base that stores the same library **uncompressed** with a different CRC produces a build that crashes at `0x720158c` on startup. Verify the base works before patching it.
 
-Popup doodle tren tablet that xuat hien vi app doc co "doodle mode" tu
-**capability table** dung luc khoi tao. 13 diem patch goc da vo hieu hoa
-toan bo chuoi:
+```bash
+# 1. patch the lib (.text maps as VA = file_offset + 0x4000)
+python3 tools/gatefix.py base.so patched.so
 
-- 3 diem clear flag store (`0x4a85fc0`, `0x4a86030`, `0x4bad268`)
-- 2 diem `cmp #3 -> #0x7f` (`0x4c905c8`, `0x4c90734`) — mode 3 = doodle
-- 2 diem `mov w8,#3 -> #0` (`0x5f3ef6c`, `0x5f40700`) — khong bao gio set mode 3
-- 3 diem trong `0x72015xx` — cached flag luon 0 + bo khoi dung dialog
-- `0x79b4734` `returnAllProductPlan` tra 2 thay vi 3
-- `0x79b8738` `cmp w8,#0x7f` — khong bao gio khop mode doodle
-- `0xb591d94` bo qua mot buoc kiem tra license
+# 2. rebuild
+unzip -q -o base.apk -d build
+cp patched.so build/lib/arm64-v8a/libClipStudioPaint.so
+cd build && zip -q -r -X -n .so:arsc ../unsigned.apk . -x '.*'
+zipalign -f -p 4 ../unsigned.apk ../aligned.apk
 
-Khi mode khong bao gio la 3 va cached flag luon 0, nhanh hien popup
-khong bao gio duoc chay — nen khong can patch rieng cho tablet.
+# 3. sign — must match the installed signature or Android refuses the update
+apksigner sign --ks morphe_p12.p12 --ks-pass pass:morphe \
+  --key-pass pass:morphe --ks-key-alias morphe \
+  --out csp_gatefix.apk ../aligned.apk
+```
 
-## Cong cu
+`resources.arsc` must stay stored (not deflated) and 4-byte aligned, hence `-n .so:arsc` plus `zipalign -p 4`. Building in a 16 GB tmpfs fails on disk quota — build on real disk.
 
-- `tools/gatefix.py` — ap 13 diem patch, co `--list` va `<src> <dst>`
-- `tools/csp_patch.py` — patch Morphe baseline
-- `tools/build_apk.sh`, `tools/deploy.sh` — build + cai
-- `PATCHES.md` — 13+ lan thu that bai, co ghi ly do
-- `INVESTIGATION.md` — chung minh CSP khong luu license state cuc bo
+## Verification
 
-## Con lai
+| | |
+|---|---|
+| APK | `csp_gatefix.apk` (497,013,208 bytes) |
+| APK sha256 | `e9ee70d58d32f95dc4aeee1ed8bd9b6e2803c3a71706bb8de8563b3bf3fd2099` |
+| Lib md5 | `c3a28b1d46b30a2dd9e585d70c527d6a` |
+| Signature | `CN=Morphe`, SHA-256 `331f1042c40cad6844b666607ca817c6f095d1126afd2c906de045e3f2f86814` |
 
-- Backup Drive cho ibis van treo (quota 64 MB)
-- Morphe upstream: co the dong gop patch nay neu muon
+Tested on:
+- **Xiaomi Pad 7** (`2410CRP4CG`, Android 16, arm64-v8a, unrooted, real hardware) — gate gone, no doodle banner, project saved and reopened across a force-stop.
+- **Android 16 arm64 emulator** (redroid, 2136×3200 @ 440 dpi, tablet characteristics) — same library, same behaviour.
+
+## What was ruled out
+
+CSP keeps **no local license state**. Uninstalling, wiping data and reinstalling the patched build on the test device still showed doodle mode with the 13-site patch — which is how the "stale cached license" theory died and the bisection started. Enumerating all 732 files under `/data/data/jp.co.celsys.clipstudiopaint.googleplay/` on a clean install turned up only fonts, HTML assets, Crashlytics and GMS/phenotype data: no entitlement file, no plan cache.
+
+The gate strings (`View plans`, `Try for free`, `Log in`) are not in the shared library at all; they live in the bundled HTML/UI resources. The library only decides *whether* to show the dialog — which is why the patch has to sit at the branch that consults the license check.
+
+## Test report — live devices
+
+Everything below was verified on real hardware and on an emulator, not inferred.
+
+### Device A — Xiaomi Pad 7 (real hardware)
+
+| | |
+|---|---|
+| Model | `2410CRP4CG` (Xiaomi Pad 7) |
+| Codename | `uke` / `uke_global` |
+| Manufacturer | Xiaomi |
+| Android | 16 (SDK 36) |
+| Build | `BP2A.250605.031.A3` |
+| MIUI/HyperOS | `OS3.0.304.0.WOZMIXM` |
+| Fingerprint | `Xiaomi/uke_global/uke:16/BP2A.250605.031.A3/OS3.0.304.0.WOZMIXM:user/release-keys` |
+| Kernel | `6.1.138-android14-11-g0c3d559bcd85-ab14529422` |
+| ABI | `arm64-v8a` only |
+| Display | 2136 × 3200 physical, 440 dpi |
+| Characteristics | `tablet` |
+| Security patch | 2026-09-01 |
+| Root | **none** — `shell` uid 2000 only, no `su`, `run-as` unavailable (not debuggable) |
+| Connection | ADB over Wi-Fi (TLS pairing) |
+
+Result: gate gone, no doodle popup, no "saving disabled" banner, project saved and reopened after a force-stop. No crash in `logcat -b crash`.
+
+### Device B — Android 16 arm64 emulator (redroid)
+
+| | |
+|---|---|
+| Model string | `2410CRP4CG` (set via `resetprop` to match Device A) |
+| Android | 16 (SDK 36) |
+| ABI | `arm64-v8a` |
+| Display | 2136 × 3200, 440 dpi |
+| Characteristics | `tablet` |
+| Host kernel | `6.17.0-1011-oracle` on `aarch64` |
+| Container | redroid + Magisk image, privileged, binderfs |
+| Root | yes (container-level) |
+| Connection | ADB over TCP via SSH tunnel |
+
+Result: same library, same behaviour — gate gone, no doodle, saving works.
+
+### What was tested
+
+1. Cold start from a fully stopped process — gate does not appear.
+2. Create a new canvas, draw, save, `am force-stop`, reopen — the artwork is still there.
+3. Force-stop and relaunch repeatedly across several days of session — gate stays gone.
+4. Uninstall + `pm clear` + fresh install of the patched build — no doodle mode (this disproved the cached-license theory).
+
+### Not tested / not claimed
+
+- No Google Play Services licence check was spoofed or intercepted.
+- No network traffic was modified; the patch is purely static in the shared library.
+- Split-APK installs, x86/x86_64 devices, and Android below 12 were not exercised.
+
+### Reproducing the bisection
+
+Each trial build differs from the working base by only the listed sites. Install, open the app, and record three booleans: gate shown, doodle banner shown, save succeeds. The table in [GATEFIX.md](GATEFIX.md) is the complete result matrix.
+
+## Licence
+
+Patch instructions and documentation only. No Celsys binaries are redistributed here. You must own a legitimate copy of Clip Studio Paint; apply this to your own installation at your own risk.
