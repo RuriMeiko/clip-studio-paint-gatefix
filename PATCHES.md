@@ -74,3 +74,22 @@ Fingerprint: `331f1042c40cad6844b666607ca817c6f095d1126afd2c906de045e3f2f86814`
 - Screen size `(604, 412)`
 - Projects tab `(216, 1420)`
 - Thoát canvas `(55, 173)`
+## ĐÍNH CHÍNH QUAN TRỌNG (2026-10-28)
+
+Kết luận trước đó SAI. Gate KHÔNG nhớ trạng thái:
+
+- Force-stop -> mở lại: gate hiện lại
+- Về home -> mở lại: gate hiện lại (ảnh `p_b.png`, md5 giống `p_a.png`)
+
+Cú bấm X chỉ có giá trị trong phiên hiện tại. Mỗi lần mở app đều phải bấm lại.
+
+### Thử thêm: gate_nowait @0x7a81184
+
+Patch `b 0x7a811d0` để bỏ vòng chờ kết quả -> **app thoát về launcher**.
+Nguyên nhân: `0x7a811d0: bl 0x7a7e970` có side effect xoá cờ global mà code sau cần.
+
+### Kết luận sau 10 lần thử
+
+Mọi patch vào đường gate đều phá app. Gate gắn chặt vào luồng cấp phép
+(RTTI object, global flags, callback chain), không phải UI tách rời.
+

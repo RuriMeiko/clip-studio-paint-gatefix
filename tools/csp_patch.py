@@ -53,6 +53,10 @@ PATCHES = {
         0x4A6AE64, "1ffc0171",
         "cmp w0,#3 -> cmp w0,#0x7f (never matches -> non-doodle branch)",
     ),
+    "gate_nowait": (
+        0x7A81184, "13000014",
+        "b 0x7a811d0 - skip result-wait loop, return 1 immediately",
+    ),
     "gate_getter": (
         0x79B8734, "40008052c0035fd6",
         "Activation-mode getter -> mov w0,#2 ; ret",
